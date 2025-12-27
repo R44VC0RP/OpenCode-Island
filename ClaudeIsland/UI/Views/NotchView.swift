@@ -311,8 +311,9 @@ struct PromptInputView: View {
     }
     
     /// Shortened working directory for display (replaces home with ~)
+    /// Uses server's actual directory if connected, otherwise configured directory
     private var shortenedWorkingDirectory: String {
-        let path = AppSettings.effectiveWorkingDirectory
+        let path = viewModel.openCodeService.serverWorkingDirectory ?? AppSettings.effectiveWorkingDirectory
         let home = NSHomeDirectory()
         if path == home {
             return "~"

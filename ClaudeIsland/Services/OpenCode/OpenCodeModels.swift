@@ -265,6 +265,14 @@ enum PromptPart: Codable {
     }
 }
 
+// MARK: - Path
+
+/// Response from GET /path - server's current working directory
+struct PathInfo: Codable {
+    let cwd: String
+    let root: String?
+}
+
 // MARK: - Config
 
 struct ServerConfig: Codable {

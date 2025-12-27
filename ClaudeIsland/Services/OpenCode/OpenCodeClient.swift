@@ -82,6 +82,13 @@ actor OpenCodeClient {
         }
     }
     
+    // MARK: - Path
+    
+    /// Get the server's current working directory
+    func getPath() async throws -> PathInfo {
+        try await get("/path")
+    }
+    
     // MARK: - Agents
     
     /// Get list of all available agents

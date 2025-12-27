@@ -83,6 +83,9 @@ class OpenCodeService: ObservableObject {
     
     // MARK: - Connection Management
     
+    /// The server's current working directory (set on connect)
+    @Published private(set) var serverWorkingDirectory: String?
+    
     /// Connect to the OpenCode server
     func connect() async {
         log("connect() called, current state: \(connectionState)")
@@ -94,6 +97,21 @@ class OpenCodeService: ObservableObject {
             let health = try await client.health()
             serverVersion = health.version
             log("Server health OK, version: \(health.version)")
+            
+            // Get server's working directory
+            log("Getting server path...")
+            let pathInfo = try await client.getPath()
+            serverWorkingDirectory = pathInfo.cwd
+            log("Server working directory: \(pathInfo.cwd)")
+            
+            // Check if it matches expected directory
+            let expectedDir = AppSettings.effectiveWorkingDirectory
+            if pathInfo.cwd != expectedDir {
+                log("WARNING: Server directory (\(pathInfo.cwd)) doesn't match expected (\(expectedDir))")
+                // Clear any persisted session since it's in a different directory
+                activeSessionID = nil
+                AppSettings.persistedSessionID = nil
+            }
             
             // Load agents
             log("Loading agents...")
@@ -188,13 +206,23 @@ class OpenCodeService: ObservableObject {
     
     /// Get or create an active session
     func getOrCreateSession() async throws -> String {
+        let expectedDirectory = AppSettings.effectiveWorkingDirectory
+        
         // If we have a persisted session ID, try to use it
         if let sessionID = activeSessionID ?? AppSettings.persistedSessionID {
-            // Verify the session still exists
+            // Verify the session still exists and is in the correct directory
             do {
-                _ = try await client.getSession(id: sessionID)
-                activeSessionID = sessionID
-                return sessionID
+                let session = try await client.getSession(id: sessionID)
+                
+                // Check if session directory matches expected working directory
+                if let sessionDir = session.directory, sessionDir != expectedDirectory {
+                    log("Session directory (\(sessionDir)) doesn't match expected (\(expectedDirectory)), creating new session")
+                    activeSessionID = nil
+                    AppSettings.persistedSessionID = nil
+                } else {
+                    activeSessionID = sessionID
+                    return sessionID
+                }
             } catch {
                 // Session doesn't exist, clear it and create new one
                 activeSessionID = nil
@@ -206,6 +234,7 @@ class OpenCodeService: ObservableObject {
         let session = try await client.createSession(title: "OpenCode Island")
         activeSessionID = session.id
         AppSettings.persistedSessionID = session.id
+        log("Created new session: \(session.id) in directory: \(session.directory ?? "unknown")")
         return session.id
     }
     
