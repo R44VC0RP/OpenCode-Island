@@ -203,6 +203,7 @@ class OpenCodeServerManager: ObservableObject {
     /// Find the opencode binary in common locations
     private func findOpencodeBinary() -> String? {
         let possiblePaths = [
+            "\(NSHomeDirectory())/.opencode/bin/opencode",  // Default install location
             "/usr/local/bin/opencode",
             "/opt/homebrew/bin/opencode",
             "\(NSHomeDirectory())/.local/bin/opencode",
