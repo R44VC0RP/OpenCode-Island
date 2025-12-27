@@ -126,6 +126,45 @@ struct MyView: View {
 }
 ```
 
+## Critical: Panel Sizing and Hit Testing
+
+**When adding UI elements to the settings menu or any panel content, you MUST update the `openedSize` in `NotchViewModel.swift`.**
+
+### Why This Matters
+
+The app uses a custom hit testing system to determine which clicks should be handled by the panel vs. passed through to windows behind. The click detection bounds are calculated from `openedSize`, with some adjustments in `NotchGeometry.openedScreenRect()`.
+
+If UI content extends beyond the calculated bounds:
+1. Clicks on those elements will be detected as "outside" the panel
+2. The global mouse handler (`handleMouseDown`) will immediately close the panel
+3. The SwiftUI button never receives the `mouseUp` event, so the action never fires
+4. **Buttons will appear to do nothing** even though they render correctly
+
+### How to Fix
+
+When adding rows/content to `NotchMenuView.swift` or other panel views:
+
+1. **Calculate the total content height** - sum up all rows (~44px each), dividers (~8px), and padding
+2. **Update `openedSize`** in `NotchViewModel.swift`:
+```swift
+case .menu:
+    return CGSize(
+        width: min(screenRect.width * 0.4, 480),
+        height: 700  // Must accommodate ALL menu items
+    )
+```
+
+3. **Test by clicking elements at the bottom** of the panel - these are most likely to fall outside bounds
+
+### Related Files
+
+| File | Role in Hit Testing |
+|------|---------------------|
+| `Core/NotchViewModel.swift` | `openedSize` defines panel dimensions per content type |
+| `Core/NotchGeometry.swift` | `openedScreenRect()` calculates click detection bounds |
+| `UI/Window/NotchViewController.swift` | `hitTestRect()` uses geometry to filter clicks |
+| `UI/Window/NotchWindow.swift` | `sendEvent()` routes or passes through mouse events |
+
 ## Common Tasks
 
 ### Adding a New Agent
@@ -146,6 +185,19 @@ Agent(id: "my-agent", name: "MyAgent", description: "Does X", icon: "sparkles")
 1. Add case to `NotchContentType` in `Core/NotchViewModel.swift`
 2. Update `openedSize` computed property for sizing
 3. Add view case in `NotchView.contentView`
+
+### Adding Menu Items to Settings
+
+1. Add your row component to `NotchMenuView.swift`
+2. **CRITICAL:** Update the menu height in `NotchViewModel.openedSize`:
+```swift
+case .menu:
+    return CGSize(
+        width: min(screenRect.width * 0.4, 480),
+        height: 700  // Increase if adding more rows!
+    )
+```
+3. Test that buttons at the bottom of the menu still work
 
 ### Connecting to OpenCode (Future)
 
