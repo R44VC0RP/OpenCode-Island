@@ -8,7 +8,7 @@
 import SwiftUI
 
 struct ScreenPickerRow: View {
-    @ObservedObject var screenSelector: ScreenSelector
+    @ObservedObject var screenSelector = ScreenSelector.shared
     @State private var isHovered = false
 
     private var isExpanded: Bool {

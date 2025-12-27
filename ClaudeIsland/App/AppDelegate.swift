@@ -1,3 +1,10 @@
+//
+//  AppDelegate.swift
+//  ClaudeIsland
+//
+//  App delegate for OpenCode Island
+//
+
 import AppKit
 import IOKit
 import Mixpanel
@@ -41,6 +48,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        // Initialize analytics
         Mixpanel.initialize(token: "49814c1436104ed108f3fc4735228496")
 
         let distinctId = getOrCreateDistinctId()
@@ -56,8 +64,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             "macos_version": osVersion
         ])
 
-        fetchAndRegisterClaudeVersion()
-
         Mixpanel.mainInstance().people.set(properties: [
             "app_version": version,
             "build_number": build,
@@ -67,16 +73,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         Mixpanel.mainInstance().track(event: "App Launched")
         Mixpanel.mainInstance().flush()
 
-        HookInstaller.installIfNeeded()
+        // Set as accessory app (no dock icon)
         NSApplication.shared.setActivationPolicy(.accessory)
 
+        // Initialize hotkey manager (starts listening for hotkeys)
+        _ = HotkeyManager.shared
+        
+        // Start OpenCode server if enabled
+        Task {
+            await OpenCodeServerManager.shared.startServerIfNeeded()
+        }
+
+        // Setup window
         windowManager = WindowManager()
         _ = windowManager?.setupNotchWindow()
 
+        // Observe screen changes
         screenObserver = ScreenObserver { [weak self] in
             self?.handleScreenChange()
         }
 
+        // Check for updates
         if updater.canCheckForUpdates {
             updater.checkForUpdates()
         }
@@ -92,6 +109,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // Stop the OpenCode server if we started it
+        OpenCodeServerManager.shared.stopServer()
+        
         Mixpanel.mainInstance().flush()
         updateCheckTimer?.invalidate()
         screenObserver = nil
@@ -123,55 +143,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let newId = UUID().uuidString
         UserDefaults.standard.set(newId, forKey: key)
         return newId
-    }
-
-    private func fetchAndRegisterClaudeVersion() {
-        let claudeProjectsDir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/projects")
-
-        guard let projectDirs = try? FileManager.default.contentsOfDirectory(
-            at: claudeProjectsDir,
-            includingPropertiesForKeys: [.contentModificationDateKey],
-            options: .skipsHiddenFiles
-        ) else { return }
-
-        var latestFile: URL?
-        var latestDate: Date?
-
-        for projectDir in projectDirs {
-            guard let files = try? FileManager.default.contentsOfDirectory(
-                at: projectDir,
-                includingPropertiesForKeys: [.contentModificationDateKey],
-                options: .skipsHiddenFiles
-            ) else { continue }
-
-            for file in files where file.pathExtension == "jsonl" && !file.lastPathComponent.hasPrefix("agent-") {
-                if let attrs = try? file.resourceValues(forKeys: [.contentModificationDateKey]),
-                   let modDate = attrs.contentModificationDate {
-                    if latestDate == nil || modDate > latestDate! {
-                        latestDate = modDate
-                        latestFile = file
-                    }
-                }
-            }
-        }
-
-        guard let jsonlFile = latestFile,
-              let handle = FileHandle(forReadingAtPath: jsonlFile.path) else { return }
-        defer { try? handle.close() }
-
-        let data = handle.readData(ofLength: 8192)
-        guard let content = String(data: data, encoding: .utf8) else { return }
-
-        for line in content.components(separatedBy: .newlines) where !line.isEmpty {
-            guard let lineData = line.data(using: .utf8),
-                  let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
-                  let version = json["version"] as? String else { continue }
-
-            Mixpanel.mainInstance().registerSuperProperties(["claude_code_version": version])
-            Mixpanel.mainInstance().people.set(properties: ["claude_code_version": version])
-            return
-        }
     }
 
     private func ensureSingleInstance() -> Bool {

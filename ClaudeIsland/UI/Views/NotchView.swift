@@ -2,10 +2,11 @@
 //  NotchView.swift
 //  ClaudeIsland
 //
-//  The main dynamic island SwiftUI view with accurate notch shape
+//  The main dynamic island SwiftUI view for prompt interface
 //
 
 import AppKit
+import Combine
 import CoreGraphics
 import SwiftUI
 
@@ -17,81 +18,30 @@ private let cornerRadiusInsets = (
 
 struct NotchView: View {
     @ObservedObject var viewModel: NotchViewModel
-    @StateObject private var sessionMonitor = ClaudeSessionMonitor()
-    @StateObject private var activityCoordinator = NotchActivityCoordinator.shared
-    @ObservedObject private var updateManager = UpdateManager.shared
-    @State private var previousPendingIds: Set<String> = []
-    @State private var previousWaitingForInputIds: Set<String> = []
-    @State private var waitingForInputTimestamps: [String: Date] = [:]  // sessionId -> when it entered waitingForInput
     @State private var isVisible: Bool = false
     @State private var isHovering: Bool = false
-    @State private var isBouncing: Bool = false
-
-    @Namespace private var activityNamespace
-
-    /// Whether any Claude session is currently processing or compacting
-    private var isAnyProcessing: Bool {
-        sessionMonitor.instances.contains { $0.phase == .processing || $0.phase == .compacting }
+    @FocusState private var isInputFocused: Bool
+    
+    /// Whether to show compact processing indicator (pill expands slightly)
+    private var showCompactProcessing: Bool {
+        viewModel.status == .closed && viewModel.contentType == .processing
     }
-
-    /// Whether any Claude session has a pending permission request
-    private var hasPendingPermission: Bool {
-        sessionMonitor.instances.contains { $0.phase.isWaitingForApproval }
-    }
-
-    /// Whether any Claude session is waiting for user input (done/ready state) within the display window
-    private var hasWaitingForInput: Bool {
-        let now = Date()
-        let displayDuration: TimeInterval = 30  // Show checkmark for 30 seconds
-
-        return sessionMonitor.instances.contains { session in
-            guard session.phase == .waitingForInput else { return false }
-            // Only show if within the 30-second display window
-            if let enteredAt = waitingForInputTimestamps[session.stableId] {
-                return now.timeIntervalSince(enteredAt) < displayDuration
-            }
-            return false
-        }
-    }
-
+    
     // MARK: - Sizing
-
+    
     private var closedNotchSize: CGSize {
         CGSize(
             width: viewModel.deviceNotchRect.width,
             height: viewModel.deviceNotchRect.height
         )
     }
-
-    /// Extra width for expanding activities (like Dynamic Island)
-    private var expansionWidth: CGFloat {
-        // Permission indicator adds width on left side only
-        let permissionIndicatorWidth: CGFloat = hasPendingPermission ? 18 : 0
-
-        // Expand for processing activity
-        if activityCoordinator.expandingActivity.show {
-            switch activityCoordinator.expandingActivity.type {
-            case .claude:
-                let baseWidth = 2 * max(0, closedNotchSize.height - 12) + 20
-                return baseWidth + permissionIndicatorWidth
-            case .none:
-                break
-            }
-        }
-
-        // Expand for pending permissions (left indicator) or waiting for input (checkmark on right)
-        if hasPendingPermission {
-            return 2 * max(0, closedNotchSize.height - 12) + 20 + permissionIndicatorWidth
-        }
-
-        // Waiting for input just shows checkmark on right, no extra left indicator
-        if hasWaitingForInput {
-            return 2 * max(0, closedNotchSize.height - 12) + 20
-        }
-
-        return 0
+    
+    /// Extra width for the compact processing indicator
+    /// Expands the notch to show spinner + "Processing..." below notch
+    private var compactExpansionWidth: CGFloat {
+        showCompactProcessing ? 80 : 0
     }
-
+    
     private var notchSize: CGSize {
         switch viewModel.status {
         case .closed, .popping:
@@ -100,42 +50,36 @@ struct NotchView: View {
             return viewModel.openedSize
         }
     }
-
-    /// Width of the closed content (notch + any expansion)
-    private var closedContentWidth: CGFloat {
-        closedNotchSize.width + expansionWidth
-    }
-
+    
     // MARK: - Corner Radii
-
+    
     private var topCornerRadius: CGFloat {
         viewModel.status == .opened
             ? cornerRadiusInsets.opened.top
             : cornerRadiusInsets.closed.top
     }
-
+    
     private var bottomCornerRadius: CGFloat {
         viewModel.status == .opened
             ? cornerRadiusInsets.opened.bottom
             : cornerRadiusInsets.closed.bottom
     }
-
+    
     private var currentNotchShape: NotchShape {
         NotchShape(
             topCornerRadius: topCornerRadius,
             bottomCornerRadius: bottomCornerRadius
         )
     }
-
+    
     // Animation springs
     private let openAnimation = Animation.spring(response: 0.42, dampingFraction: 0.8, blendDuration: 0)
     private let closeAnimation = Animation.spring(response: 0.45, dampingFraction: 1.0, blendDuration: 0)
-
+    
     // MARK: - Body
-
+    
     var body: some View {
         ZStack(alignment: .top) {
-            // Outer container does NOT receive hits - only the notch content does
             VStack(spacing: 0) {
                 notchLayout
                     .frame(
@@ -167,11 +111,9 @@ struct NotchView: View {
                         alignment: .top
                     )
                     .animation(viewModel.status == .opened ? openAnimation : closeAnimation, value: viewModel.status)
-                    .animation(openAnimation, value: notchSize) // Animate container size changes between content types
-                    .animation(.smooth, value: activityCoordinator.expandingActivity)
-                    .animation(.smooth, value: hasPendingPermission)
-                    .animation(.smooth, value: hasWaitingForInput)
-                    .animation(.spring(response: 0.3, dampingFraction: 0.5), value: isBouncing)
+                    .animation(openAnimation, value: notchSize)
+                    .animation(.spring(response: 0.3, dampingFraction: 0.8), value: viewModel.showAgentPicker)
+                    .animation(.spring(response: 0.3, dampingFraction: 0.8), value: showCompactProcessing)
                     .contentShape(Rectangle())
                     .onHover { hovering in
                         withAnimation(.spring(response: 0.38, dampingFraction: 0.8)) {
@@ -189,8 +131,7 @@ struct NotchView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .preferredColorScheme(.dark)
         .onAppear {
-            sessionMonitor.startMonitoring()
-            // On non-notched devices, keep visible so users have a target to interact with
+            // Keep visible on non-notched devices
             if !viewModel.hasPhysicalNotch {
                 isVisible = true
             }
@@ -198,37 +139,33 @@ struct NotchView: View {
         .onChange(of: viewModel.status) { oldStatus, newStatus in
             handleStatusChange(from: oldStatus, to: newStatus)
         }
-        .onChange(of: sessionMonitor.pendingInstances) { _, sessions in
-            handlePendingSessionsChange(sessions)
-        }
-        .onChange(of: sessionMonitor.instances) { _, instances in
-            handleProcessingChange()
-            handleWaitingForInputChange(instances)
+        .onChange(of: viewModel.contentType) { _, newContentType in
+            // Keep visible when processing starts (even if closed)
+            if newContentType == .processing {
+                isVisible = true
+            }
         }
     }
-
+    
     // MARK: - Notch Layout
-
-    private var isProcessing: Bool {
-        activityCoordinator.expandingActivity.show && activityCoordinator.expandingActivity.type == .claude
-    }
-
-    /// Whether to show the expanded closed state (processing, pending permission, or waiting for input)
-    private var showClosedActivity: Bool {
-        isProcessing || hasPendingPermission || hasWaitingForInput
-    }
-
+    
     @ViewBuilder
     private var notchLayout: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Header row - always present, contains crab and spinner that persist across states
+            // Header row - always present (this sits behind the physical notch)
             headerRow
                 .frame(height: max(24, closedNotchSize.height))
-
+            
+            // Compact processing indicator - shows BELOW the notch when closed + processing
+            if showCompactProcessing {
+                compactProcessingIndicator
+                    .transition(.opacity.combined(with: .scale(scale: 0.8)))
+            }
+            
             // Main content only when opened
             if viewModel.status == .opened {
                 contentView
-                    .frame(width: notchSize.width - 24) // Fixed width to prevent reflow
+                    .frame(width: notchSize.width - 24)
                     .transition(
                         .asymmetric(
                             insertion: .scale(scale: 0.8, anchor: .top)
@@ -240,264 +177,633 @@ struct NotchView: View {
             }
         }
     }
-
-    // MARK: - Header Row (persists across states)
-
+    
+    // MARK: - Compact Processing Indicator
+    
+    @ViewBuilder
+    private var compactProcessingIndicator: some View {
+        HStack(spacing: 8) {
+            ProcessingSpinner()
+                .scaleEffect(1.0)
+            Text("Processing...")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(.white.opacity(0.8))
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .frame(width: closedNotchSize.width + compactExpansionWidth)
+    }
+    
+    // MARK: - Header Row
+    
     @ViewBuilder
     private var headerRow: some View {
         HStack(spacing: 0) {
-            // Left side - crab + optional permission indicator (visible when processing, pending, or waiting for input)
-            if showClosedActivity {
-                HStack(spacing: 4) {
-                    ClaudeCrabIcon(size: 14, animateLegs: isProcessing)
-                        .matchedGeometryEffect(id: "crab", in: activityNamespace, isSource: showClosedActivity)
-
-                    // Permission indicator only (amber) - waiting for input shows checkmark on right
-                    if hasPendingPermission {
-                        PermissionIndicatorIcon(size: 14, color: Color(red: 0.85, green: 0.47, blue: 0.34))
-                            .matchedGeometryEffect(id: "status-indicator", in: activityNamespace, isSource: showClosedActivity)
-                    }
-                }
-                .frame(width: viewModel.status == .opened ? nil : sideWidth + (hasPendingPermission ? 18 : 0))
-                .padding(.leading, viewModel.status == .opened ? 8 : 0)
-            }
-
-            // Center content
+            // Left side - icon when opened
             if viewModel.status == .opened {
-                // Opened: show header content
-                openedHeaderContent
-            } else if !showClosedActivity {
-                // Closed without activity: empty space
-                Rectangle()
-                    .fill(.clear)
-                    .frame(width: closedNotchSize.width - 20)
-            } else {
-                // Closed with activity: black spacer (with optional bounce)
-                Rectangle()
-                    .fill(.black)
-                    .frame(width: closedNotchSize.width - cornerRadiusInsets.closed.top + (isBouncing ? 16 : 0))
-            }
-
-            // Right side - spinner when processing/pending, checkmark when waiting for input
-            if showClosedActivity {
-                if isProcessing || hasPendingPermission {
-                    ProcessingSpinner()
-                        .matchedGeometryEffect(id: "spinner", in: activityNamespace, isSource: showClosedActivity)
-                        .frame(width: viewModel.status == .opened ? 20 : sideWidth)
-                } else if hasWaitingForInput {
-                    // Checkmark for waiting-for-input on the right side
-                    ReadyForInputIndicatorIcon(size: 14, color: TerminalColors.green)
-                        .matchedGeometryEffect(id: "spinner", in: activityNamespace, isSource: showClosedActivity)
-                        .frame(width: viewModel.status == .opened ? 20 : sideWidth)
-                }
-            }
-        }
-        .frame(height: closedNotchSize.height)
-    }
-
-    private var sideWidth: CGFloat {
-        max(0, closedNotchSize.height - 12) + 10
-    }
-
-    // MARK: - Opened Header Content
-
-    @ViewBuilder
-    private var openedHeaderContent: some View {
-        HStack(spacing: 12) {
-            // Show static crab only if not showing activity in headerRow
-            // (headerRow handles crab + indicator when showClosedActivity is true)
-            if !showClosedActivity {
-                ClaudeCrabIcon(size: 14)
-                    .matchedGeometryEffect(id: "crab", in: activityNamespace, isSource: !showClosedActivity)
+                Image(systemName: "sparkles")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(.white.opacity(0.8))
                     .padding(.leading, 8)
-            }
-
-            Spacer()
-
-            // Menu toggle
-            Button {
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                    viewModel.toggleMenu()
-                    if viewModel.contentType == .menu {
-                        updateManager.markUpdateSeen()
+                
+                Spacer()
+                
+                // Menu toggle
+                Button {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                        viewModel.toggleMenu()
                     }
-                }
-            } label: {
-                ZStack(alignment: .topTrailing) {
-                    Image(systemName: viewModel.contentType == .menu ? "xmark" : "line.3.horizontal")
+                } label: {
+                    Image(systemName: viewModel.contentType == .menu ? "xmark" : "gearshape")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundColor(.white.opacity(0.4))
                         .frame(width: 22, height: 22)
                         .contentShape(Rectangle())
-
-                    // Green dot for unseen update
-                    if updateManager.hasUnseenUpdate && viewModel.contentType != .menu {
-                        Circle()
-                            .fill(TerminalColors.green)
-                            .frame(width: 6, height: 6)
-                            .offset(x: -2, y: 2)
-                    }
                 }
+                .buttonStyle(.plain)
+            } else {
+                // Closed state - empty (notch area)
+                Rectangle()
+                    .fill(.clear)
+                    .frame(width: showCompactProcessing ? closedNotchSize.width + compactExpansionWidth : closedNotchSize.width - 20)
             }
-            .buttonStyle(.plain)
         }
+        .frame(height: closedNotchSize.height)
     }
-
-    // MARK: - Content View (Opened State)
-
+    
+    // MARK: - Content View
+    
     @ViewBuilder
     private var contentView: some View {
         Group {
             switch viewModel.contentType {
-            case .instances:
-                ClaudeInstancesView(
-                    sessionMonitor: sessionMonitor,
-                    viewModel: viewModel
-                )
+            case .prompt:
+                PromptInputView(viewModel: viewModel, isInputFocused: $isInputFocused)
+            case .processing:
+                ProcessingView(viewModel: viewModel)
+            case .result:
+                ResultView(viewModel: viewModel)
             case .menu:
                 NotchMenuView(viewModel: viewModel)
-            case .chat(let session):
-                ChatView(
-                    sessionId: session.sessionId,
-                    initialSession: session,
-                    sessionMonitor: sessionMonitor,
-                    viewModel: viewModel
-                )
             }
         }
-        .frame(width: notchSize.width - 24) // Fixed width to prevent text reflow
-        // Removed .id() - was causing view recreation and performance issues
+        .frame(width: notchSize.width - 24)
     }
-
+    
     // MARK: - Event Handlers
-
-    private func handleProcessingChange() {
-        if isAnyProcessing || hasPendingPermission {
-            // Show claude activity when processing or waiting for permission
-            activityCoordinator.showActivity(type: .claude)
-            isVisible = true
-        } else if hasWaitingForInput {
-            // Keep visible for waiting-for-input but hide the processing spinner
-            activityCoordinator.hideActivity()
-            isVisible = true
-        } else {
-            // Hide activity when done
-            activityCoordinator.hideActivity()
-
-            // Delay hiding the notch until animation completes
-            // Don't hide on non-notched devices - users need a visible target
-            if viewModel.status == .closed && viewModel.hasPhysicalNotch {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    if !isAnyProcessing && !hasPendingPermission && !hasWaitingForInput && viewModel.status == .closed {
-                        isVisible = false
-                    }
-                }
-            }
-        }
-    }
-
+    
     private func handleStatusChange(from oldStatus: NotchStatus, to newStatus: NotchStatus) {
         switch newStatus {
         case .opened, .popping:
             isVisible = true
-            // Clear waiting-for-input timestamps only when manually opened (user acknowledged)
-            if viewModel.openReason == .click || viewModel.openReason == .hover {
-                waitingForInputTimestamps.removeAll()
+            // Focus input when opening via hotkey
+            if viewModel.openReason == .hotkey && viewModel.contentType == .prompt {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    isInputFocused = true
+                }
             }
         case .closed:
-            // Don't hide on non-notched devices - users need a visible target
             guard viewModel.hasPhysicalNotch else { return }
+            // Don't hide if we're processing - need to show compact indicator
+            guard viewModel.contentType != .processing else { return }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                if viewModel.status == .closed && !isAnyProcessing && !hasPendingPermission && !hasWaitingForInput && !activityCoordinator.expandingActivity.show {
+                if viewModel.status == .closed && viewModel.contentType != .processing {
                     isVisible = false
                 }
             }
         }
     }
+}
 
-    private func handlePendingSessionsChange(_ sessions: [SessionState]) {
-        let currentIds = Set(sessions.map { $0.stableId })
-        let newPendingIds = currentIds.subtracting(previousPendingIds)
+// MARK: - Prompt Input View
 
-        if !newPendingIds.isEmpty &&
-           viewModel.status == .closed &&
-           !TerminalVisibilityDetector.isTerminalVisibleOnCurrentSpace() {
-            viewModel.notchOpen(reason: .notification)
-        }
-
-        previousPendingIds = currentIds
-    }
-
-    private func handleWaitingForInputChange(_ instances: [SessionState]) {
-        // Get sessions that are now waiting for input
-        let waitingForInputSessions = instances.filter { $0.phase == .waitingForInput }
-        let currentIds = Set(waitingForInputSessions.map { $0.stableId })
-        let newWaitingIds = currentIds.subtracting(previousWaitingForInputIds)
-
-        // Track timestamps for newly waiting sessions
-        let now = Date()
-        for session in waitingForInputSessions where newWaitingIds.contains(session.stableId) {
-            waitingForInputTimestamps[session.stableId] = now
-        }
-
-        // Clean up timestamps for sessions no longer waiting
-        let staleIds = Set(waitingForInputTimestamps.keys).subtracting(currentIds)
-        for staleId in staleIds {
-            waitingForInputTimestamps.removeValue(forKey: staleId)
-        }
-
-        // Bounce the notch when a session newly enters waitingForInput state
-        if !newWaitingIds.isEmpty {
-            // Get the sessions that just entered waitingForInput
-            let newlyWaitingSessions = waitingForInputSessions.filter { newWaitingIds.contains($0.stableId) }
-
-            // Play notification sound if the session is not actively focused
-            if let soundName = AppSettings.notificationSound.soundName {
-                // Check if we should play sound (async check for tmux pane focus)
-                Task {
-                    let shouldPlaySound = await shouldPlayNotificationSound(for: newlyWaitingSessions)
-                    if shouldPlaySound {
-                        await MainActor.run {
-                            NSSound(named: soundName)?.play()
+struct PromptInputView: View {
+    @ObservedObject var viewModel: NotchViewModel
+    var isInputFocused: FocusState<Bool>.Binding
+    
+    var body: some View {
+        VStack(spacing: 12) {
+            // Connection status indicator
+            if !viewModel.connectionState.isConnected {
+                ConnectionStatusBanner(viewModel: viewModel)
+            }
+            
+            // Error message if any
+            if let error = viewModel.errorMessage {
+                HStack {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11))
+                        .foregroundColor(.orange)
+                    Text(error)
+                        .font(.system(size: 12))
+                        .foregroundColor(.orange)
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.orange.opacity(0.1))
+                )
+            }
+            
+            // Agent badge if selected
+            if let agent = viewModel.selectedAgent {
+                HStack {
+                    AgentBadge(agent: agent) {
+                        viewModel.clearAgent()
+                    }
+                    Spacer()
+                }
+            }
+            
+            // Text input
+            HStack(spacing: 10) {
+                TextField("Ask anything... (/ for agents)", text: $viewModel.promptText)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 14))
+                    .foregroundColor(.white)
+                    .focused(isInputFocused)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(Color.white.opacity(0.08))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .strokeBorder(Color.white.opacity(0.1), lineWidth: 1)
+                            )
+                    )
+                    .onHover { hovering in
+                        if hovering {
+                            NSCursor.iBeam.push()
+                        } else {
+                            NSCursor.pop()
                         }
                     }
+                    .onSubmit {
+                        viewModel.submitPrompt()
+                    }
+                    .onChange(of: viewModel.promptText) { _, text in
+                        // Show agent picker when typing /
+                        if text == "/" {
+                            withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                                viewModel.showAgentPicker = true
+                            }
+                        } else if !text.hasPrefix("/") {
+                            viewModel.showAgentPicker = false
+                        }
+                    }
+                
+                // Submit button
+                Button {
+                    viewModel.submitPrompt()
+                } label: {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 28))
+                        .foregroundColor(viewModel.promptText.isEmpty && viewModel.attachedImages.isEmpty ? .white.opacity(0.2) : .white.opacity(0.9))
                 }
+                .buttonStyle(.plain)
+                .disabled(viewModel.promptText.isEmpty && viewModel.attachedImages.isEmpty)
             }
-
-            // Trigger bounce animation to get user's attention
-            DispatchQueue.main.async {
-                isBouncing = true
-                // Bounce back after a short delay
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                    isBouncing = false
-                }
+            
+            // Attached images preview
+            if !viewModel.attachedImages.isEmpty {
+                AttachedImagesPreview(viewModel: viewModel)
             }
-
-            // Schedule hiding the checkmark after 30 seconds
-            DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [self] in
-                // Trigger a UI update to re-evaluate hasWaitingForInput
-                handleProcessingChange()
+            
+            // Agent picker
+            if viewModel.showAgentPicker {
+                AgentPickerView(viewModel: viewModel)
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .move(edge: .top)),
+                        removal: .opacity
+                    ))
+            }
+            
+            // Keyboard hint
+            HStack {
+                Text("Enter to send \u{2022} Esc to dismiss \u{2022} \u{2318}V to paste images")
+                    .font(.system(size: 11))
+                    .foregroundColor(.white.opacity(0.3))
             }
         }
-
-        previousWaitingForInputIds = currentIds
+        .padding(.top, 8)
+        .padding(.bottom, 12)
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                isInputFocused.wrappedValue = true
+            }
+        }
+        .onChange(of: viewModel.status) { _, newStatus in
+            // Re-focus when opened (e.g., via hotkey)
+            if newStatus == .opened {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    isInputFocused.wrappedValue = true
+                }
+            }
+        }
     }
+}
 
-    /// Determine if notification sound should play for the given sessions
-    /// Returns true if ANY session is not actively focused
-    private func shouldPlayNotificationSound(for sessions: [SessionState]) async -> Bool {
-        for session in sessions {
-            guard let pid = session.pid else {
-                // No PID means we can't check focus, assume not focused
-                return true
+// MARK: - Attached Images Preview
+
+struct AttachedImagesPreview: View {
+    @ObservedObject var viewModel: NotchViewModel
+    
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(viewModel.attachedImages) { attachedImage in
+                    AttachedImageThumbnail(
+                        image: attachedImage,
+                        onRemove: { viewModel.removeImage(attachedImage) }
+                    )
+                }
             }
+            .padding(.vertical, 4)
+        }
+        .frame(height: 70)
+    }
+}
 
-            let isFocused = await TerminalVisibilityDetector.isSessionFocused(sessionPid: pid)
-            if !isFocused {
-                return true
+struct AttachedImageThumbnail: View {
+    let image: NotchViewModel.AttachedImage
+    let onRemove: () -> Void
+    
+    @State private var isHovering = false
+    
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Image(nsImage: image.image)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: 60, height: 60)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(Color.white.opacity(0.2), lineWidth: 1)
+                )
+            
+            // Remove button (visible on hover)
+            if isHovering {
+                Button(action: onRemove) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 16))
+                        .foregroundColor(.white)
+                        .background(Circle().fill(Color.black.opacity(0.6)))
+                }
+                .buttonStyle(.plain)
+                .offset(x: 4, y: -4)
             }
         }
+        .onHover { isHovering = $0 }
+    }
+}
 
-        return false
+// MARK: - Connection Status Banner
+
+struct ConnectionStatusBanner: View {
+    @ObservedObject var viewModel: NotchViewModel
+    
+    var body: some View {
+        HStack(spacing: 8) {
+            switch viewModel.connectionState {
+            case .disconnected:
+                Image(systemName: "wifi.slash")
+                    .font(.system(size: 11))
+                    .foregroundColor(.red)
+                Text("Not connected")
+                    .font(.system(size: 12))
+                    .foregroundColor(.red.opacity(0.9))
+                Spacer()
+                Button("Connect") {
+                    viewModel.reconnect()
+                }
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.white)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(Capsule().fill(Color.white.opacity(0.15)))
+                .buttonStyle(.plain)
+                
+            case .connecting:
+                ProgressView()
+                    .scaleEffect(0.6)
+                    .frame(width: 14, height: 14)
+                Text("Connecting...")
+                    .font(.system(size: 12))
+                    .foregroundColor(.yellow.opacity(0.9))
+                Spacer()
+                
+            case .error(let message):
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11))
+                    .foregroundColor(.orange)
+                Text(message)
+                    .font(.system(size: 12))
+                    .foregroundColor(.orange.opacity(0.9))
+                Spacer()
+                Button("Retry") {
+                    viewModel.reconnect()
+                }
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.white)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(Capsule().fill(Color.white.opacity(0.15)))
+                .buttonStyle(.plain)
+                
+            case .connected:
+                EmptyView()
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.red.opacity(0.1))
+        )
+    }
+}
+
+// MARK: - Agent Badge
+
+struct AgentBadge: View {
+    let agent: Agent
+    let onRemove: () -> Void
+    
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: agent.icon)
+                .font(.system(size: 11))
+            Text(agent.name)
+                .font(.system(size: 12, weight: .medium))
+            
+            Button(action: onRemove) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+            }
+            .buttonStyle(.plain)
+        }
+        .foregroundColor(.white)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(
+            Capsule()
+                .fill(Color.white.opacity(0.15))
+        )
+    }
+}
+
+// MARK: - Agent Picker View
+
+struct AgentPickerView: View {
+    @ObservedObject var viewModel: NotchViewModel
+    
+    /// Track whether the view has appeared for animation
+    @State private var hasAppeared = false
+    
+    private var filterText: String {
+        if viewModel.promptText.hasPrefix("/") {
+            return String(viewModel.promptText.dropFirst())
+        }
+        return ""
+    }
+    
+    private var filteredAgents: [Agent] {
+        let agents = viewModel.availableAgents
+        if filterText.isEmpty {
+            return agents
+        }
+        return agents.filter {
+            $0.name.localizedCaseInsensitiveContains(filterText) ||
+            $0.id.localizedCaseInsensitiveContains(filterText)
+        }
+    }
+    
+    var body: some View {
+        VStack(spacing: 4) {
+            ForEach(filteredAgents) { agent in
+                AgentRow(agent: agent) {
+                    viewModel.selectAgent(agent)
+                }
+            }
+            
+            if filteredAgents.isEmpty {
+                Text("No matching agents")
+                    .font(.system(size: 12))
+                    .foregroundColor(.white.opacity(0.4))
+                    .padding(.vertical, 8)
+            }
+        }
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.white.opacity(0.05))
+        )
+        .opacity(hasAppeared ? 1 : 0)
+        .offset(y: hasAppeared ? 0 : -8)
+        .onAppear {
+            withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                hasAppeared = true
+            }
+        }
+    }
+}
+
+struct AgentRow: View {
+    let agent: Agent
+    let onSelect: () -> Void
+    
+    @State private var isHovering = false
+    
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(spacing: 10) {
+                Image(systemName: agent.icon)
+                    .font(.system(size: 14))
+                    .foregroundColor(.white.opacity(0.7))
+                    .frame(width: 24)
+                
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(agent.name)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.white)
+                    Text(agent.description)
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.5))
+                }
+                
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(isHovering ? Color.white.opacity(0.1) : Color.clear)
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
+    }
+}
+
+// MARK: - Processing View
+
+struct ProcessingView: View {
+    @ObservedObject var viewModel: NotchViewModel
+    
+    @State private var dotCount: Int = 1
+    private let timer = Timer.publish(every: 0.4, on: .main, in: .common).autoconnect()
+    
+    private var dots: String {
+        String(repeating: ".", count: dotCount)
+    }
+    
+    var body: some View {
+        HStack(spacing: 12) {
+            ProcessingSpinner()
+            
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Working\(dots)")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(.white)
+                
+                if let agent = viewModel.selectedAgent {
+                    Text("Using \(agent.name)")
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.5))
+                }
+            }
+            
+            Spacer()
+            
+            Button {
+                viewModel.dismiss()
+            } label: {
+                Text("Cancel")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.white.opacity(0.6))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(
+                        Capsule()
+                            .fill(Color.white.opacity(0.1))
+                    )
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.vertical, 12)
+        .onReceive(timer) { _ in
+            dotCount = (dotCount % 3) + 1
+        }
+    }
+}
+
+// MARK: - Result View
+
+struct ResultView: View {
+    @ObservedObject var viewModel: NotchViewModel
+    @State private var followUpText: String = ""
+    @FocusState private var isFollowUpFocused: Bool
+    
+    var body: some View {
+        VStack(spacing: 12) {
+            // Result header
+            HStack {
+                if let agent = viewModel.selectedAgent {
+                    Image(systemName: agent.icon)
+                        .font(.system(size: 12))
+                        .foregroundColor(.white.opacity(0.6))
+                    Text(agent.name)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.white.opacity(0.6))
+                } else {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundColor(.green)
+                    Text("Complete")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.white.opacity(0.6))
+                }
+                
+                Spacer()
+                
+                // Copy button in header
+                Button {
+                    viewModel.copyResult()
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.5))
+                }
+                .buttonStyle(.plain)
+            }
+            
+            // Result content
+            ScrollView {
+                MarkdownText(viewModel.resultText, color: .white.opacity(0.9), fontSize: 13)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 200)
+            
+            Divider()
+                .background(Color.white.opacity(0.1))
+            
+            // Follow-up prompt input
+            HStack(spacing: 10) {
+                TextField("Ask a follow-up...", text: $followUpText)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 14))
+                    .foregroundColor(.white)
+                    .focused($isFollowUpFocused)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(Color.white.opacity(0.08))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .strokeBorder(Color.white.opacity(0.1), lineWidth: 1)
+                            )
+                    )
+                    .onHover { hovering in
+                        if hovering {
+                            NSCursor.iBeam.push()
+                        } else {
+                            NSCursor.pop()
+                        }
+                    }
+                    .onSubmit {
+                        submitFollowUp()
+                    }
+                
+                // Submit button
+                Button {
+                    submitFollowUp()
+                } label: {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 28))
+                        .foregroundColor(followUpText.isEmpty ? .white.opacity(0.2) : .white.opacity(0.9))
+                }
+                .buttonStyle(.plain)
+                .disabled(followUpText.isEmpty)
+            }
+            
+            // Keyboard hint
+            Text("Enter to send \u{2022} Esc to dismiss")
+                .font(.system(size: 11))
+                .foregroundColor(.white.opacity(0.3))
+        }
+        .padding(.top, 8)
+        .padding(.bottom, 12)
+    }
+    
+    private func submitFollowUp() {
+        guard !followUpText.isEmpty else { return }
+        viewModel.promptText = followUpText
+        followUpText = ""
+        viewModel.submitPrompt()
     }
 }

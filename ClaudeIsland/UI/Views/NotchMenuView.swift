@@ -2,23 +2,21 @@
 //  NotchMenuView.swift
 //  ClaudeIsland
 //
-//  Minimal menu matching Dynamic Island aesthetic
+//  Settings menu for OpenCode Island
 //
 
 import ApplicationServices
 import Combine
-import SwiftUI
 import ServiceManagement
 import Sparkle
+import SwiftUI
 
 // MARK: - NotchMenuView
 
 struct NotchMenuView: View {
     @ObservedObject var viewModel: NotchViewModel
-    @ObservedObject private var updateManager = UpdateManager.shared
     @ObservedObject private var screenSelector = ScreenSelector.shared
-    @ObservedObject private var soundSelector = SoundSelector.shared
-    @State private var hooksInstalled: Bool = false
+    @ObservedObject private var hotkeyManager = HotkeyManager.shared
     @State private var launchAtLogin: Bool = false
 
     var body: some View {
@@ -34,10 +32,22 @@ struct NotchMenuView: View {
             Divider()
                 .background(Color.white.opacity(0.08))
                 .padding(.vertical, 4)
+            
+            // Server connection status
+            ServerStatusRow(viewModel: viewModel)
+            
+            // Working directory
+            WorkingDirectoryRow(viewModel: viewModel)
+
+            Divider()
+                .background(Color.white.opacity(0.08))
+                .padding(.vertical, 4)
+
+            // Hotkey settings
+            HotkeyPickerRow(selection: $hotkeyManager.hotkey)
 
             // Appearance settings
-            ScreenPickerRow(screenSelector: screenSelector)
-            SoundPickerRow(soundSelector: soundSelector)
+            ScreenPickerRow()
 
             Divider()
                 .background(Color.white.opacity(0.08))
@@ -62,49 +72,27 @@ struct NotchMenuView: View {
                 }
             }
 
-            MenuToggleRow(
-                icon: "arrow.triangle.2.circlepath",
-                label: "Hooks",
-                isOn: hooksInstalled
-            ) {
-                if hooksInstalled {
-                    HookInstaller.uninstall()
-                    hooksInstalled = false
-                } else {
-                    HookInstaller.installIfNeeded()
-                    hooksInstalled = true
-                }
-            }
-
             AccessibilityRow(isEnabled: AXIsProcessTrusted())
 
             Divider()
                 .background(Color.white.opacity(0.08))
                 .padding(.vertical, 4)
 
-            // About
-            UpdateRow(updateManager: updateManager)
-
-            MenuRow(
-                icon: "star",
-                label: "Star on GitHub"
-            ) {
-                if let url = URL(string: "https://github.com/farouqaldori/claude-island") {
-                    NSWorkspace.shared.open(url)
-                }
-            }
+            // Agents section with default agent picker
+            AgentsSection(viewModel: viewModel)
+            
+            // Models section with default model picker
+            ModelsSection(viewModel: viewModel)
 
             Divider()
                 .background(Color.white.opacity(0.08))
                 .padding(.vertical, 4)
 
-            MenuRow(
-                icon: "xmark.circle",
-                label: "Quit",
-                isDestructive: true
-            ) {
-                NSApplication.shared.terminate(nil)
-            }
+            // About / Updates
+            AboutRow()
+            
+            // Quit
+            QuitRow()
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 8)
@@ -120,18 +108,995 @@ struct NotchMenuView: View {
     }
 
     private func refreshStates() {
-        hooksInstalled = HookInstaller.isInstalled()
         launchAtLogin = SMAppService.mainApp.status == .enabled
         screenSelector.refreshScreens()
     }
 }
 
-// MARK: - Update Row
+// MARK: - Server Status Row
 
-struct UpdateRow: View {
-    @ObservedObject var updateManager: UpdateManager
+struct ServerStatusRow: View {
+    @ObservedObject var viewModel: NotchViewModel
     @State private var isHovered = false
-    @State private var isSpinning = false
+    @State private var isExpanded = false
+    @State private var serverURLText: String = AppSettings.serverURL ?? ""
+    @State private var autoStartServer: Bool = AppSettings.autoStartServer
+    
+    var body: some View {
+        VStack(spacing: 4) {
+            // Main status row
+            Button {
+                withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                    isExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: statusIcon)
+                        .font(.system(size: 12))
+                        .foregroundColor(statusColor)
+                        .frame(width: 16)
+                    
+                    Text("OpenCode Server")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.white.opacity(isHovered ? 1.0 : 0.7))
+                    
+                    Spacer()
+                    
+                    if case .connected = viewModel.connectionState {
+                        Circle()
+                            .fill(TerminalColors.green)
+                            .frame(width: 6, height: 6)
+                        Text("Connected")
+                            .font(.system(size: 11))
+                            .foregroundColor(.white.opacity(0.4))
+                    } else if case .connecting = viewModel.connectionState {
+                        ProgressView()
+                            .scaleEffect(0.5)
+                            .frame(width: 14, height: 14)
+                        Text("Connecting...")
+                            .font(.system(size: 11))
+                            .foregroundColor(.white.opacity(0.4))
+                    } else {
+                        Text("Disconnected")
+                            .font(.system(size: 11))
+                            .foregroundColor(.white.opacity(0.4))
+                    }
+                    
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.white.opacity(0.4))
+                        .rotationEffect(.degrees(isExpanded ? 180 : 0))
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(isHovered ? Color.white.opacity(0.08) : Color.clear)
+                )
+            }
+            .buttonStyle(.plain)
+            .onHover { isHovered = $0 }
+            
+            // Expanded settings
+            if isExpanded {
+                ServerSettingsDropdown(
+                    viewModel: viewModel,
+                    serverURLText: $serverURLText,
+                    autoStartServer: $autoStartServer
+                )
+            }
+        }
+    }
+    
+    private var statusIcon: String {
+        switch viewModel.connectionState {
+        case .connected:
+            return "checkmark.circle.fill"
+        case .connecting:
+            return "arrow.triangle.2.circlepath"
+        case .disconnected:
+            return "wifi.slash"
+        case .error:
+            return "exclamationmark.triangle.fill"
+        }
+    }
+    
+    private var statusColor: Color {
+        switch viewModel.connectionState {
+        case .connected:
+            return TerminalColors.green
+        case .connecting:
+            return .yellow
+        case .disconnected:
+            return .white.opacity(0.5)
+        case .error:
+            return .orange
+        }
+    }
+}
+
+// MARK: - Server Settings Dropdown
+
+private struct ServerSettingsDropdown: View {
+    @ObservedObject var viewModel: NotchViewModel
+    @Binding var serverURLText: String
+    @Binding var autoStartServer: Bool
+    @State private var hasAppeared = false
+    @FocusState private var isURLFieldFocused: Bool
+    
+    var body: some View {
+        VStack(spacing: 8) {
+            // Server URL field
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Server URL (leave empty for default)")
+                    .font(.system(size: 10))
+                    .foregroundColor(.white.opacity(0.5))
+                
+                HStack(spacing: 8) {
+                    TextField("http://127.0.0.1:4096", text: $serverURLText)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundColor(.white)
+                        .focused($isURLFieldFocused)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(Color.white.opacity(0.08))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .strokeBorder(Color.white.opacity(0.1), lineWidth: 1)
+                                )
+                        )
+                        .onSubmit {
+                            applyServerURL()
+                        }
+                    
+                    Button("Apply") {
+                        applyServerURL()
+                    }
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Capsule().fill(Color.white.opacity(0.15)))
+                    .buttonStyle(.plain)
+                }
+            }
+            
+            // Auto-start toggle
+            Button {
+                autoStartServer.toggle()
+                AppSettings.autoStartServer = autoStartServer
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "play.circle")
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.6))
+                        .frame(width: 14)
+                    
+                    Text("Auto-start server")
+                        .font(.system(size: 12))
+                        .foregroundColor(.white.opacity(0.8))
+                    
+                    Spacer()
+                    
+                    Circle()
+                        .fill(autoStartServer ? TerminalColors.green : Color.white.opacity(0.3))
+                        .frame(width: 6, height: 6)
+                    
+                    Text(autoStartServer ? "On" : "Off")
+                        .font(.system(size: 10))
+                        .foregroundColor(.white.opacity(0.4))
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+            }
+            .buttonStyle(.plain)
+            
+            // Connect/Disconnect button
+            HStack {
+                if case .connected = viewModel.connectionState {
+                    Button("Disconnect") {
+                        viewModel.disconnect()
+                    }
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(Capsule().fill(Color.red.opacity(0.3)))
+                    .buttonStyle(.plain)
+                } else {
+                    Button("Connect") {
+                        viewModel.reconnect()
+                    }
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(Capsule().fill(Color.white.opacity(0.15)))
+                    .buttonStyle(.plain)
+                }
+                
+                Spacer()
+                
+                if !serverURLText.isEmpty {
+                    Button("Reset to Default") {
+                        serverURLText = ""
+                        applyServerURL()
+                    }
+                    .font(.system(size: 10))
+                    .foregroundColor(.white.opacity(0.5))
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.white.opacity(0.05))
+        )
+        .opacity(hasAppeared ? 1 : 0)
+        .offset(y: hasAppeared ? 0 : -8)
+        .onAppear {
+            withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                hasAppeared = true
+            }
+        }
+    }
+    
+    private func applyServerURL() {
+        let trimmed = serverURLText.trimmingCharacters(in: .whitespacesAndNewlines)
+        AppSettings.serverURL = trimmed.isEmpty ? nil : trimmed
+        
+        // Reinitialize client with new URL and reconnect
+        viewModel.openCodeService.reinitializeClient()
+        viewModel.reconnect()
+    }
+}
+
+// MARK: - Working Directory Row
+
+struct WorkingDirectoryRow: View {
+    @ObservedObject var viewModel: NotchViewModel
+    @State private var isHovered = false
+    @State private var isExpanded = false
+    
+    private var displayPath: String {
+        let path = AppSettings.effectiveWorkingDirectory
+        // Show abbreviated path
+        if path == NSHomeDirectory() {
+            return "~ (Home)"
+        }
+        // Replace home directory with ~
+        if path.hasPrefix(NSHomeDirectory()) {
+            return "~" + path.dropFirst(NSHomeDirectory().count)
+        }
+        return path
+    }
+    
+    var body: some View {
+        VStack(spacing: 4) {
+            Button {
+                withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                    isExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "folder")
+                        .font(.system(size: 12))
+                        .foregroundColor(.white.opacity(isHovered ? 1.0 : 0.7))
+                        .frame(width: 16)
+                    
+                    Text("Working Directory")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.white.opacity(isHovered ? 1.0 : 0.7))
+                    
+                    Spacer()
+                    
+                    Text(displayPath)
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.4))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.white.opacity(0.4))
+                        .rotationEffect(.degrees(isExpanded ? 180 : 0))
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(isHovered ? Color.white.opacity(0.08) : Color.clear)
+                )
+            }
+            .buttonStyle(.plain)
+            .onHover { isHovered = $0 }
+            
+            if isExpanded {
+                WorkingDirectoryDropdown(viewModel: viewModel, isExpanded: $isExpanded)
+            }
+        }
+    }
+}
+
+private struct WorkingDirectoryDropdown: View {
+    @ObservedObject var viewModel: NotchViewModel
+    @Binding var isExpanded: Bool
+    @State private var hasAppeared = false
+    @State private var customPath: String = AppSettings.workingDirectory ?? ""
+    
+    var body: some View {
+        VStack(spacing: 8) {
+            // Current path display
+            HStack {
+                Text("Current: ")
+                    .font(.system(size: 10))
+                    .foregroundColor(.white.opacity(0.5))
+                Text(AppSettings.effectiveWorkingDirectory)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.7))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+            }
+            
+            // Browse button
+            Button {
+                browseForDirectory()
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "folder.badge.plus")
+                        .font(.system(size: 11))
+                    Text("Browse...")
+                        .font(.system(size: 12, weight: .medium))
+                    Spacer()
+                }
+                .foregroundColor(.white.opacity(0.9))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.white.opacity(0.1))
+                )
+            }
+            .buttonStyle(.plain)
+            
+            // Reset to home button
+            if AppSettings.workingDirectory != nil {
+                Button {
+                    AppSettings.workingDirectory = nil
+                    customPath = ""
+                    restartServerIfNeeded()
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "house")
+                            .font(.system(size: 11))
+                        Text("Reset to Home Directory")
+                            .font(.system(size: 11))
+                        Spacer()
+                    }
+                    .foregroundColor(.white.opacity(0.6))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.white.opacity(0.05))
+        )
+        .opacity(hasAppeared ? 1 : 0)
+        .offset(y: hasAppeared ? 0 : -8)
+        .onAppear {
+            withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                hasAppeared = true
+            }
+        }
+    }
+    
+    private func browseForDirectory() {
+        // Close the dropdown first to avoid z-order issues
+        withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+            isExpanded = false
+        }
+        
+        // Delay slightly to let the animation complete, then show panel
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            let panel = NSOpenPanel()
+            panel.canChooseFiles = false
+            panel.canChooseDirectories = true
+            panel.allowsMultipleSelection = false
+            panel.canCreateDirectories = true
+            panel.prompt = "Select"
+            panel.message = "Choose working directory for OpenCode"
+            panel.directoryURL = URL(fileURLWithPath: AppSettings.effectiveWorkingDirectory)
+            panel.level = .floating  // Ensure it appears above other windows
+            
+            panel.begin { response in
+                if response == .OK, let url = panel.url {
+                    DispatchQueue.main.async {
+                        AppSettings.workingDirectory = url.path
+                        self.customPath = url.path
+                        self.restartServerIfNeeded()
+                    }
+                }
+            }
+        }
+    }
+    
+    private func restartServerIfNeeded() {
+        // If auto-start is enabled, restart the server with new directory
+        if AppSettings.autoStartServer {
+            Task {
+                OpenCodeServerManager.shared.stopServer()
+                await OpenCodeServerManager.shared.startServerIfNeeded()
+                // Reconnect after a brief delay
+                try? await Task.sleep(for: .seconds(1))
+                await MainActor.run {
+                    viewModel.reconnect()
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Hotkey Picker Row
+
+struct HotkeyPickerRow: View {
+    @Binding var selection: HotkeyType
+    @State private var isExpanded = false
+    @State private var isHovered = false
+
+    var body: some View {
+        VStack(spacing: 4) {
+            // Current selection
+            Button {
+                withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                    isExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "command")
+                        .font(.system(size: 12))
+                        .foregroundColor(.white.opacity(isHovered ? 1.0 : 0.7))
+                        .frame(width: 16)
+
+                    Text("Summon Hotkey")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.white.opacity(isHovered ? 1.0 : 0.7))
+
+                    Spacer()
+
+                    Text(selection.displayName)
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.5))
+
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.white.opacity(0.4))
+                        .rotationEffect(.degrees(isExpanded ? 180 : 0))
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(isHovered ? Color.white.opacity(0.08) : Color.clear)
+                )
+            }
+            .buttonStyle(.plain)
+            .onHover { isHovered = $0 }
+
+            // Options dropdown
+            if isExpanded {
+                HotkeyOptionsDropdown(selection: $selection, isExpanded: $isExpanded)
+            }
+        }
+    }
+}
+
+/// Separate view for animated dropdown content
+private struct HotkeyOptionsDropdown: View {
+    @Binding var selection: HotkeyType
+    @Binding var isExpanded: Bool
+    @State private var hasAppeared = false
+    
+    var body: some View {
+        VStack(spacing: 2) {
+            ForEach(HotkeyType.presets.indices, id: \.self) { index in
+                let preset = HotkeyType.presets[index]
+                HotkeyOptionRow(
+                    hotkey: preset,
+                    isSelected: selection == preset
+                ) {
+                    selection = preset
+                    withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                        isExpanded = false
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 4)
+        .padding(.horizontal, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.white.opacity(0.05))
+        )
+        .opacity(hasAppeared ? 1 : 0)
+        .offset(y: hasAppeared ? 0 : -8)
+        .onAppear {
+            withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                hasAppeared = true
+            }
+        }
+    }
+}
+
+struct HotkeyOptionRow: View {
+    let hotkey: HotkeyType
+    let isSelected: Bool
+    let onSelect: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: onSelect) {
+            HStack {
+                Text(hotkey.displayName)
+                    .font(.system(size: 13))
+                    .foregroundColor(.white)
+
+                Spacer()
+
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.white.opacity(0.6))
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(isHovering ? Color.white.opacity(0.1) : Color.clear)
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
+    }
+}
+
+// MARK: - Agents Section
+
+struct AgentsSection: View {
+    @ObservedObject var viewModel: NotchViewModel
+    @State private var isExpanded = false
+    @State private var isHovered = false
+    
+    private var agents: [Agent] {
+        viewModel.availableAgents
+    }
+    
+    private var defaultAgentName: String {
+        if let defaultID = AppSettings.defaultAgentID,
+           let agent = agents.first(where: { $0.id == defaultID }) {
+            return agent.name
+        }
+        return "None"
+    }
+
+    var body: some View {
+        VStack(spacing: 4) {
+            Button {
+                withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                    isExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "person.2")
+                        .font(.system(size: 12))
+                        .foregroundColor(.white.opacity(isHovered ? 1.0 : 0.7))
+                        .frame(width: 16)
+
+                    Text("Default Agent")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.white.opacity(isHovered ? 1.0 : 0.7))
+
+                    Spacer()
+
+                    Text(defaultAgentName)
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.4))
+
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.white.opacity(0.4))
+                        .rotationEffect(.degrees(isExpanded ? 180 : 0))
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(isHovered ? Color.white.opacity(0.08) : Color.clear)
+                )
+            }
+            .buttonStyle(.plain)
+            .onHover { isHovered = $0 }
+
+            if isExpanded {
+                AgentsDropdown(viewModel: viewModel, isExpanded: $isExpanded)
+            }
+        }
+    }
+}
+
+/// Separate view for animated dropdown content
+private struct AgentsDropdown: View {
+    @ObservedObject var viewModel: NotchViewModel
+    @Binding var isExpanded: Bool
+    @State private var hasAppeared = false
+    
+    private var agents: [Agent] {
+        viewModel.availableAgents
+    }
+    
+    var body: some View {
+        VStack(spacing: 2) {
+            // "None" option to clear default
+            AgentDefaultRow(
+                agent: nil,
+                isSelected: AppSettings.defaultAgentID == nil
+            ) {
+                viewModel.setDefaultAgent(nil)
+                withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                    isExpanded = false
+                }
+            }
+            
+            ForEach(agents) { agent in
+                AgentDefaultRow(
+                    agent: agent,
+                    isSelected: AppSettings.defaultAgentID == agent.id
+                ) {
+                    viewModel.setDefaultAgent(agent)
+                    withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                        isExpanded = false
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 4)
+        .padding(.horizontal, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.white.opacity(0.05))
+        )
+        .opacity(hasAppeared ? 1 : 0)
+        .offset(y: hasAppeared ? 0 : -8)
+        .onAppear {
+            withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                hasAppeared = true
+            }
+        }
+    }
+}
+
+/// Row for selecting default agent
+private struct AgentDefaultRow: View {
+    let agent: Agent?
+    let isSelected: Bool
+    let onSelect: () -> Void
+    
+    @State private var isHovering = false
+    
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(spacing: 10) {
+                if let agent = agent {
+                    Image(systemName: agent.icon)
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.6))
+                        .frame(width: 16)
+                    
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(agent.name)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(.white.opacity(0.9))
+                        Text(agent.description)
+                            .font(.system(size: 10))
+                            .foregroundColor(.white.opacity(0.5))
+                            .lineLimit(1)
+                    }
+                } else {
+                    Image(systemName: "minus.circle")
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.6))
+                        .frame(width: 16)
+                    
+                    Text("None")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.white.opacity(0.9))
+                }
+                
+                Spacer()
+                
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.white.opacity(0.6))
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(isHovering ? Color.white.opacity(0.1) : Color.clear)
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
+    }
+}
+
+// MARK: - Models Section
+
+struct ModelsSection: View {
+    @ObservedObject var viewModel: NotchViewModel
+    @State private var isExpanded = false
+    @State private var isHovered = false
+    @State private var searchText = ""
+    
+    private var models: [ModelRef] {
+        viewModel.openCodeService.availableModels
+    }
+    
+    private var defaultModelName: String {
+        if let defaultID = AppSettings.defaultModelID,
+           let model = models.first(where: { $0.id == defaultID }) {
+            return model.displayName
+        }
+        return "Server Default"
+    }
+
+    var body: some View {
+        VStack(spacing: 4) {
+            Button {
+                withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                    isExpanded.toggle()
+                    if !isExpanded {
+                        searchText = ""
+                    }
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "cpu")
+                        .font(.system(size: 12))
+                        .foregroundColor(.white.opacity(isHovered ? 1.0 : 0.7))
+                        .frame(width: 16)
+
+                    Text("Default Model")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.white.opacity(isHovered ? 1.0 : 0.7))
+
+                    Spacer()
+
+                    Text(defaultModelName)
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.4))
+                        .lineLimit(1)
+
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.white.opacity(0.4))
+                        .rotationEffect(.degrees(isExpanded ? 180 : 0))
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(isHovered ? Color.white.opacity(0.08) : Color.clear)
+                )
+            }
+            .buttonStyle(.plain)
+            .onHover { isHovered = $0 }
+
+            if isExpanded {
+                ModelsDropdown(
+                    models: models,
+                    searchText: $searchText,
+                    isExpanded: $isExpanded
+                )
+            }
+        }
+    }
+}
+
+/// Dropdown for selecting default model with search
+private struct ModelsDropdown: View {
+    let models: [ModelRef]
+    @Binding var searchText: String
+    @Binding var isExpanded: Bool
+    @State private var hasAppeared = false
+    @FocusState private var isSearchFocused: Bool
+    
+    private var filteredModels: [ModelRef] {
+        if searchText.isEmpty {
+            return models
+        }
+        return models.filter { model in
+            model.displayName.localizedCaseInsensitiveContains(searchText) ||
+            model.modelID.localizedCaseInsensitiveContains(searchText) ||
+            model.providerID.localizedCaseInsensitiveContains(searchText)
+        }
+    }
+    
+    var body: some View {
+        VStack(spacing: 8) {
+            // Search field
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 11))
+                    .foregroundColor(.white.opacity(0.4))
+                
+                TextField("Search models...", text: $searchText)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+                    .foregroundColor(.white)
+                    .focused($isSearchFocused)
+                
+                if !searchText.isEmpty {
+                    Button {
+                        searchText = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 11))
+                            .foregroundColor(.white.opacity(0.4))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.white.opacity(0.08))
+            )
+            .onHover { hovering in
+                if hovering {
+                    NSCursor.iBeam.push()
+                } else {
+                    NSCursor.pop()
+                }
+            }
+            
+            // Models list
+            if filteredModels.isEmpty && searchText.isEmpty {
+                Text("No models available")
+                    .font(.system(size: 11))
+                    .foregroundColor(.white.opacity(0.4))
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity)
+            } else if filteredModels.isEmpty {
+                Text("No matching models")
+                    .font(.system(size: 11))
+                    .foregroundColor(.white.opacity(0.4))
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity)
+            } else {
+                ScrollView {
+                    VStack(spacing: 2) {
+                        // "Server Default" option (only show if not searching)
+                        if searchText.isEmpty {
+                            ModelDefaultRow(
+                                model: nil,
+                                isSelected: AppSettings.defaultModelID == nil
+                            ) {
+                                AppSettings.defaultModelID = nil
+                                withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                                    isExpanded = false
+                                }
+                            }
+                        }
+                        
+                        ForEach(filteredModels) { model in
+                            ModelDefaultRow(
+                                model: model,
+                                isSelected: AppSettings.defaultModelID == model.id
+                            ) {
+                                AppSettings.defaultModelID = model.id
+                                withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                                    isExpanded = false
+                                }
+                            }
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+                .frame(height: min(CGFloat(filteredModels.count + (searchText.isEmpty ? 1 : 0)) * 32, 200))
+            }
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.white.opacity(0.05))
+        )
+        .opacity(hasAppeared ? 1 : 0)
+        .offset(y: hasAppeared ? 0 : -8)
+        .onAppear {
+            withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                hasAppeared = true
+            }
+            // Focus search field
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                isSearchFocused = true
+            }
+        }
+    }
+}
+
+/// Row for selecting default model
+private struct ModelDefaultRow: View {
+    let model: ModelRef?
+    let isSelected: Bool
+    let onSelect: () -> Void
+    
+    @State private var isHovering = false
+    
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(spacing: 10) {
+                if let model = model {
+                    Image(systemName: "cpu")
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.6))
+                        .frame(width: 16)
+                    
+                    Text(model.displayName)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.white.opacity(0.9))
+                        .lineLimit(1)
+                } else {
+                    Image(systemName: "server.rack")
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.6))
+                        .frame(width: 16)
+                    
+                    Text("Server Default")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.white.opacity(0.9))
+                }
+                
+                Spacer()
+                
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.white.opacity(0.6))
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(isHovering ? Color.white.opacity(0.1) : Color.clear)
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
+    }
+}
+
+// MARK: - About Row
+
+struct AboutRow: View {
+    @State private var isHovered = false
 
     private var appVersion: String {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
@@ -141,227 +1106,69 @@ struct UpdateRow: View {
 
     var body: some View {
         Button {
-            handleTap()
+            // Check for updates
+            if let delegate = AppDelegate.shared {
+                delegate.updater.checkForUpdates()
+            }
         } label: {
             HStack(spacing: 10) {
-                // Icon
-                ZStack {
-                    if case .installing = updateManager.state {
-                        Image(systemName: "gear")
-                            .font(.system(size: 12))
-                            .foregroundColor(TerminalColors.blue)
-                            .rotationEffect(.degrees(isSpinning ? 360 : 0))
-                            .animation(.linear(duration: 1).repeatForever(autoreverses: false), value: isSpinning)
-                            .onAppear { isSpinning = true }
-                    } else {
-                        Image(systemName: icon)
-                            .font(.system(size: 12))
-                            .foregroundColor(iconColor)
-                    }
-                }
-                .frame(width: 16)
+                Image(systemName: "arrow.down.circle")
+                    .font(.system(size: 12))
+                    .foregroundColor(.white.opacity(isHovered ? 1.0 : 0.7))
+                    .frame(width: 16)
 
-                // Label
-                Text(label)
+                Text("Check for Updates")
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(labelColor)
+                    .foregroundColor(.white.opacity(isHovered ? 1.0 : 0.7))
 
                 Spacer()
 
-                // Right side: progress or status
-                rightContent
+                Text(appVersion)
+                    .font(.system(size: 11))
+                    .foregroundColor(.white.opacity(0.4))
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
             .background(
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(isHovered && isInteractive ? Color.white.opacity(0.08) : Color.clear)
+                    .fill(isHovered ? Color.white.opacity(0.08) : Color.clear)
             )
         }
         .buttonStyle(.plain)
-        .disabled(!isInteractive)
         .onHover { isHovered = $0 }
-        .animation(.easeInOut(duration: 0.2), value: updateManager.state)
     }
+}
 
-    // MARK: - Right Content
+// MARK: - Quit Row
 
-    @ViewBuilder
-    private var rightContent: some View {
-        switch updateManager.state {
-        case .idle:
-            Text(appVersion)
-                .font(.system(size: 11))
-                .foregroundColor(.white.opacity(0.4))
+struct QuitRow: View {
+    @State private var isHovered: Bool = false
 
-        case .upToDate:
-            HStack(spacing: 6) {
-                Image(systemName: "checkmark")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundColor(TerminalColors.green)
-                Text("Up to date")
-                    .font(.system(size: 11))
-                    .foregroundColor(TerminalColors.green)
+    var body: some View {
+        Button {
+            NSApp.terminate(nil)
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "xmark.circle")
+                    .font(.system(size: 12))
+                    .foregroundColor(isHovered ? Color(red: 1.0, green: 0.4, blue: 0.4) : Color(red: 1.0, green: 0.4, blue: 0.4).opacity(0.7))
+                    .frame(width: 16)
+
+                Text("Quit")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(isHovered ? Color(red: 1.0, green: 0.4, blue: 0.4) : Color(red: 1.0, green: 0.4, blue: 0.4).opacity(0.7))
+
+                Spacer()
             }
-
-        case .checking, .installing:
-            ProgressView()
-                .scaleEffect(0.5)
-                .frame(width: 12, height: 12)
-
-        case .found(let version, _):
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(TerminalColors.green)
-                    .frame(width: 6, height: 6)
-                Text("v\(version)")
-                    .font(.system(size: 11))
-                    .foregroundColor(TerminalColors.green)
-            }
-
-        case .downloading(let progress):
-            HStack(spacing: 8) {
-                ProgressView(value: progress)
-                    .frame(width: 60)
-                    .tint(TerminalColors.blue)
-                Text("\(Int(progress * 100))%")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(TerminalColors.blue)
-                    .frame(width: 32, alignment: .trailing)
-            }
-
-        case .extracting(let progress):
-            HStack(spacing: 8) {
-                ProgressView(value: progress)
-                    .frame(width: 60)
-                    .tint(TerminalColors.amber)
-                Text("\(Int(progress * 100))%")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(TerminalColors.amber)
-                    .frame(width: 32, alignment: .trailing)
-            }
-
-        case .readyToInstall(let version):
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(TerminalColors.green)
-                    .frame(width: 6, height: 6)
-                Text("v\(version)")
-                    .font(.system(size: 11))
-                    .foregroundColor(TerminalColors.green)
-            }
-
-        case .error:
-            Text("Retry")
-                .font(.system(size: 11))
-                .foregroundColor(.white.opacity(0.5))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(isHovered ? Color.white.opacity(0.08) : Color.clear)
+            )
         }
-    }
-
-    // MARK: - Computed Properties
-
-    private var icon: String {
-        switch updateManager.state {
-        case .idle:
-            return "arrow.down.circle"
-        case .checking:
-            return "arrow.down.circle"
-        case .upToDate:
-            return "checkmark.circle.fill"
-        case .found:
-            return "arrow.down.circle.fill"
-        case .downloading:
-            return "arrow.down.circle"
-        case .extracting:
-            return "doc.zipper"
-        case .readyToInstall:
-            return "checkmark.circle.fill"
-        case .installing:
-            return "gear"
-        case .error:
-            return "exclamationmark.circle"
-        }
-    }
-
-    private var iconColor: Color {
-        switch updateManager.state {
-        case .idle:
-            return .white.opacity(isHovered ? 1.0 : 0.7)
-        case .checking:
-            return .white.opacity(0.7)
-        case .upToDate:
-            return TerminalColors.green
-        case .found, .readyToInstall:
-            return TerminalColors.green
-        case .downloading:
-            return TerminalColors.blue
-        case .extracting:
-            return TerminalColors.amber
-        case .installing:
-            return TerminalColors.blue
-        case .error:
-            return Color(red: 1.0, green: 0.4, blue: 0.4)
-        }
-    }
-
-    private var label: String {
-        switch updateManager.state {
-        case .idle:
-            return "Check for Updates"
-        case .checking:
-            return "Checking..."
-        case .upToDate:
-            return "Check for Updates"
-        case .found:
-            return "Download Update"
-        case .downloading:
-            return "Downloading..."
-        case .extracting:
-            return "Extracting..."
-        case .readyToInstall:
-            return "Install & Relaunch"
-        case .installing:
-            return "Installing..."
-        case .error:
-            return "Update failed"
-        }
-    }
-
-    private var labelColor: Color {
-        switch updateManager.state {
-        case .idle, .upToDate:
-            return .white.opacity(isHovered ? 1.0 : 0.7)
-        case .checking, .downloading, .extracting, .installing:
-            return .white.opacity(0.9)
-        case .found, .readyToInstall:
-            return TerminalColors.green
-        case .error:
-            return Color(red: 1.0, green: 0.4, blue: 0.4)
-        }
-    }
-
-    private var isInteractive: Bool {
-        switch updateManager.state {
-        case .idle, .upToDate, .found, .readyToInstall, .error:
-            return true
-        case .checking, .downloading, .extracting, .installing:
-            return false
-        }
-    }
-
-    // MARK: - Actions
-
-    private func handleTap() {
-        switch updateManager.state {
-        case .idle, .upToDate, .error:
-            updateManager.checkForUpdates()
-        case .found:
-            updateManager.downloadAndInstall()
-        case .readyToInstall:
-            updateManager.installAndRelaunch()
-        default:
-            break
-        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
     }
 }
 
@@ -372,12 +1179,6 @@ struct AccessibilityRow: View {
 
     @State private var isHovered = false
     @State private var refreshTrigger = false
-
-    private var currentlyEnabled: Bool {
-        // Re-check on each render when refreshTrigger changes
-        _ = refreshTrigger
-        return isEnabled
-    }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -447,7 +1248,9 @@ struct MenuRow: View {
     @State private var isHovered = false
 
     var body: some View {
-        Button(action: action) {
+        Button {
+            action()
+        } label: {
             HStack(spacing: 10) {
                 Image(systemName: icon)
                     .font(.system(size: 12))
@@ -462,6 +1265,7 @@ struct MenuRow: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
+            .contentShape(Rectangle())
             .background(
                 RoundedRectangle(cornerRadius: 8)
                     .fill(isHovered ? Color.white.opacity(0.08) : Color.clear)
@@ -524,3 +1328,5 @@ struct MenuToggleRow: View {
         .white.opacity(isHovered ? 1.0 : 0.7)
     }
 }
+
+

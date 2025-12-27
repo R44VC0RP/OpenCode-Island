@@ -52,16 +52,31 @@ class NotchViewController: NSViewController {
             case .opened:
                 let panelSize = vm.openedSize
                 // Panel is centered horizontally, anchored to top
-                let panelWidth = panelSize.width + 52  // Account for corner radius padding
-                let panelHeight = panelSize.height
+                let panelWidth = panelSize.width + 80  // Extra padding for safety
+                let panelHeight = panelSize.height + 50  // Extra padding to ensure bottom buttons are included
                 let screenWidth = geometry.screenRect.width
-                return CGRect(
+                let rect = CGRect(
                     x: (screenWidth - panelWidth) / 2,
                     y: windowHeight - panelHeight,
                     width: panelWidth,
                     height: panelHeight
                 )
+                // Debug: uncomment to see hit rect
+                // print("📐 HitTest rect: \(rect), panelSize: \(panelSize)")
+                return rect
             case .closed, .popping:
+                // When closed, check if processing - need larger area for compact indicator
+                if vm.contentType == .processing {
+                    let notchRect = geometry.deviceNotchRect
+                    let screenWidth = geometry.screenRect.width
+                    // Larger area for processing indicator
+                    return CGRect(
+                        x: (screenWidth - notchRect.width) / 2 - 60,
+                        y: windowHeight - notchRect.height - 60,
+                        width: notchRect.width + 120,
+                        height: notchRect.height + 70
+                    )
+                }
                 // When closed, use the notch rect
                 let notchRect = geometry.deviceNotchRect
                 let screenWidth = geometry.screenRect.width
