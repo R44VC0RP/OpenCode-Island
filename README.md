@@ -1,18 +1,14 @@
 <div align="center">
-  <img src="ClaudeIsland/Assets.xcassets/AppIcon.appiconset/icon_128x128.png" alt="Logo" width="100" height="100">
   <h3 align="center">OpenCode Island</h3>
   <p align="center">
     A macOS menu bar app that brings a Dynamic Island-style interface for interacting with OpenCode.
     <br />
     <br />
-    <a href="https://github.com/ryanvog/OpenCode-Island/releases/latest" target="_blank" rel="noopener noreferrer">
-      <img src="https://img.shields.io/github/v/release/ryanvog/OpenCode-Island?style=rounded&color=white&labelColor=000000&label=release" alt="Release Version" />
-    </a>
-    <a href="#" target="_blank" rel="noopener noreferrer">
-      <img alt="GitHub Downloads" src="https://img.shields.io/github/downloads/ryanvog/OpenCode-Island/total?style=rounded&color=white&labelColor=000000">
-    </a>
   </p>
 </div>
+
+<img width="646" height="193" alt="image" src="https://github.com/user-attachments/assets/cace824c-8a4f-4a07-8d9a-fbb7d5f1a6f5" />
+
 
 > **Note:** This project is inspired by [Claude Island](https://github.com/farouqaldori/claude-island) by [@farouqaldori](https://github.com/farouqaldori). It is **not affiliated with** [OpenCode](https://opencode.ai) or the OpenCode team.
 
