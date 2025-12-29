@@ -125,8 +125,6 @@ struct ServerStatusRow: View {
     @ObservedObject var viewModel: NotchViewModel
     @State private var isHovered = false
     
-    private let serverManager = OpenCodeServerManager.shared
-    
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: statusIcon)
@@ -144,7 +142,7 @@ struct ServerStatusRow: View {
                 Circle()
                     .fill(TerminalColors.green)
                     .frame(width: 6, height: 6)
-                Text("Port \(serverManager.serverPort)")
+                Text(verbatim: "Port \(viewModel.serverPort)")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(.white.opacity(0.4))
             } else if case .connecting = viewModel.connectionState {

@@ -117,6 +117,11 @@ class NotchViewModel: ObservableObject {
         openCodeService.connectionState
     }
     
+    /// Server port passthrough
+    var serverPort: Int {
+        OpenCodeServerManager.shared.serverPort
+    }
+    
     /// Whether we're currently processing a prompt
     var isProcessing: Bool {
         openCodeService.isProcessing
@@ -321,6 +326,14 @@ class NotchViewModel: ObservableObject {
     private func setupServiceObservers() {
         // Forward all service changes to trigger view updates
         openCodeService.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
+        
+        // Forward server manager changes (for serverPort updates)
+        OpenCodeServerManager.shared.objectWillChange
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.objectWillChange.send()

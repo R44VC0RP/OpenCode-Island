@@ -64,11 +64,11 @@ class OpenCodeService: ObservableObject {
     // MARK: - Server Manager
     
     private let serverManager = OpenCodeServerManager.shared
-    
+
     // MARK: - Initialization
     
     init() {
-        // Client will be initialized when server starts
+        // Initialize with placeholder port; will be replaced when server starts
         self.client = OpenCodeClient(port: 0, hostname: "127.0.0.1")
         print("[OpenCodeService] Initialized, waiting for server to start")
     }
@@ -92,14 +92,25 @@ class OpenCodeService: ObservableObject {
         serverManager.isRunning ? serverManager.workingDirectory : nil
     }
     
-    /// Connect to the OpenCode server (starts server if needed)
+    /// Connect to the OpenCode server (always starts dedicated server instance)
     func connect() async {
+        // Guard against duplicate connect attempts
+        guard connectionState != .connecting else {
+            log("Already connecting; ignoring duplicate connect() call.")
+            return
+        }
+        
         log("connect() called, current state: \(connectionState)")
         connectionState = .connecting
         
         do {
+            // NOTE: We intentionally do NOT try to reuse an existing server on port 4096.
+            // The OpenCode desktop app's web UI listens there and exposes health + sessions
+            // but does not return assistant message parts correctly, which causes Island
+            // to show empty assistant responses. We always start our own `opencode serve`.
+            log("Starting dedicated OpenCode server instance...")
+            
             // Start our own server instance
-            log("Starting OpenCode server...")
             await serverManager.startServer()
             
             guard serverManager.isRunning else {
