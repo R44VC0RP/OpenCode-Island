@@ -8,7 +8,15 @@
 import CoreGraphics
 import Foundation
 
-/// Pure geometry calculations for the notch
+struct HitTestPadding {
+    let horizontal: CGFloat
+    let vertical: CGFloat
+    
+    static let openedPanel = HitTestPadding(horizontal: 40, vertical: 25)
+    static let closedNotch = HitTestPadding(horizontal: 10, vertical: 5)
+    static let processingIndicator = HitTestPadding(horizontal: 60, vertical: 35)
+}
+
 struct NotchGeometry: Sendable {
     let deviceNotchRect: CGRect
     let screenRect: CGRect
@@ -50,5 +58,31 @@ struct NotchGeometry: Sendable {
     /// Check if a point is outside the opened panel (for closing)
     func isPointOutsidePanel(_ point: CGPoint, size: CGSize) -> Bool {
         !openedScreenRect(for: size).contains(point)
+    }
+    
+    // MARK: - Hit Test Rects (Window Coordinates)
+    
+    func hitTestRectForOpenedPanel(size: CGSize, padding: HitTestPadding = .openedPanel) -> CGRect {
+        let panelWidth = size.width + (padding.horizontal * 2)
+        let panelHeight = size.height + (padding.vertical * 2)
+        return CGRect(
+            x: (screenRect.width - panelWidth) / 2,
+            y: windowHeight - panelHeight,
+            width: panelWidth,
+            height: panelHeight
+        )
+    }
+    
+    func hitTestRectForClosedNotch(padding: HitTestPadding = .closedNotch) -> CGRect {
+        CGRect(
+            x: (screenRect.width - deviceNotchRect.width) / 2 - padding.horizontal,
+            y: windowHeight - deviceNotchRect.height - padding.vertical,
+            width: deviceNotchRect.width + (padding.horizontal * 2),
+            height: deviceNotchRect.height + (padding.vertical * 2)
+        )
+    }
+    
+    func hitTestRectForProcessingIndicator() -> CGRect {
+        hitTestRectForClosedNotch(padding: .processingIndicator)
     }
 }

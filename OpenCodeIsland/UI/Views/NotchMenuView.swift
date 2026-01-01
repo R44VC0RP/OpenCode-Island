@@ -176,6 +176,8 @@ struct ServerStatusRow: View {
                 .fill(isHovered ? Color.white.opacity(0.08) : Color.clear)
         )
         .onHover { isHovered = $0 }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("OpenCode Server: \(accessibilityStatusDescription)")
     }
     
     private var statusIcon: String {
@@ -201,6 +203,19 @@ struct ServerStatusRow: View {
             return .white.opacity(0.5)
         case .error:
             return .orange
+        }
+    }
+    
+    private var accessibilityStatusDescription: String {
+        switch viewModel.connectionState {
+        case .connected:
+            return "Connected on port \(viewModel.serverPort)"
+        case .connecting:
+            return "Connecting to server"
+        case .disconnected:
+            return "Disconnected. Double tap to connect."
+        case .error(let message):
+            return "Error: \(message)"
         }
     }
 }
@@ -1160,6 +1175,8 @@ struct QuitRow: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
+        .accessibilityLabel("Quit OpenCode Island")
+        .accessibilityHint("Double tap to quit the application")
     }
 }
 
@@ -1264,6 +1281,8 @@ struct MenuRow: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
+        .accessibilityLabel(label)
+        .accessibilityHint(isDestructive ? "Double tap to \(label.lowercased())" : "")
     }
 
     private var textColor: Color {
@@ -1313,6 +1332,9 @@ struct MenuToggleRow: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
+        .accessibilityLabel("\(label), \(isOn ? "On" : "Off")")
+        .accessibilityHint("Double tap to toggle")
+        .accessibilityAddTraits(.isButton)
     }
 
     private var textColor: Color {

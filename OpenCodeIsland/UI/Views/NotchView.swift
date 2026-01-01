@@ -22,9 +22,8 @@ struct NotchView: View {
     @State private var isHovering: Bool = false
     @FocusState private var isInputFocused: Bool
     
-    /// Whether to show compact processing indicator (pill expands slightly)
     private var showCompactProcessing: Bool {
-        viewModel.status == .closed && viewModel.contentType == .processing
+        viewModel.showsCompactProcessing
     }
     
     // MARK: - Sizing
@@ -521,7 +520,7 @@ struct AttachedImagesPreview: View {
 }
 
 struct AttachedImageThumbnail: View {
-    let image: NotchViewModel.AttachedImage
+    let image: AttachedImage
     let onRemove: () -> Void
     
     @State private var isHovering = false

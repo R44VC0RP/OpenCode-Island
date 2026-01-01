@@ -16,6 +16,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var windowManager: WindowManager?
     private var screenObserver: ScreenObserver?
     private var updateCheckTimer: Timer?
+    private let startupCoordinator = StartupCoordinator.shared
 
     static var shared: AppDelegate?
     let updater: SPUUpdater
@@ -77,29 +78,54 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Set as accessory app (no dock icon)
         NSApplication.shared.setActivationPolicy(.accessory)
 
-        // Initialize hotkey manager (starts listening for hotkeys)
         _ = HotkeyManager.shared
         
-        // Start OpenCode server
         Task {
-            await OpenCodeServerManager.shared.startServer()
+            await performCoordinatedStartup()
         }
+
+        setupUpdateChecker()
+    }
+    
+    private func performCoordinatedStartup() async {
+        let success = await startupCoordinator.performStartup()
         
-        // Pre-load Whisper model for faster dictation
-        Task {
-            await SpeechService.shared.loadModel()
+        if success {
+            windowManager = WindowManager()
+            if let controller = windowManager?.setupNotchWindow() {
+                Task {
+                    await controller.viewModel.connectToServer()
+                }
+            }
+            
+            screenObserver = ScreenObserver { [weak self] in
+                self?.handleScreenChange()
+            }
+        } else {
+            handleStartupFailure()
         }
-
-        // Setup window
-        windowManager = WindowManager()
-        _ = windowManager?.setupNotchWindow()
-
-        // Observe screen changes
-        screenObserver = ScreenObserver { [weak self] in
-            self?.handleScreenChange()
+    }
+    
+    private func handleStartupFailure() {
+        guard case .failed(let error) = startupCoordinator.phase else { return }
+        
+        let alert = NSAlert()
+        alert.messageText = "Failed to Start OpenCode"
+        alert.informativeText = error.userMessage
+        alert.addButton(withTitle: "Retry")
+        alert.addButton(withTitle: "Quit")
+        alert.alertStyle = .critical
+        
+        if alert.runModal() == .alertFirstButtonReturn {
+            Task {
+                await performCoordinatedStartup()
+            }
+        } else {
+            NSApp.terminate(nil)
         }
-
-        // Check for updates
+    }
+    
+    private func setupUpdateChecker() {
         if updater.canCheckForUpdates {
             updater.checkForUpdates()
         }
