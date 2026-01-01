@@ -25,17 +25,19 @@ actor OpenCodeClient {
     
     // MARK: - Initialization
     
+    enum InitializationError: Error {
+        case invalidURL(String)
+    }
+    
     init(port: Int = 4096, hostname: String = "127.0.0.1") {
         let urlString = "http://\(hostname):\(port)"
         print("[OpenCodeClient] Initializing with URL: \(urlString)")
-        guard let url = URL(string: urlString) else {
-            fatalError("Invalid OpenCode server URL: \(urlString)")
-        }
-        self.baseURL = url
+        
+        self.baseURL = URL(string: urlString) ?? URL(string: "http://127.0.0.1:4096")!
         
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 300  // 5 minutes for long-running prompts
-        config.timeoutIntervalForResource = 600 // 10 minutes total
+        config.timeoutIntervalForRequest = 300
+        config.timeoutIntervalForResource = 600
         self.session = URLSession(configuration: config)
         
         self.decoder = JSONDecoder()
@@ -43,14 +45,12 @@ actor OpenCodeClient {
             let container = try decoder.singleValueContainer()
             let dateString = try container.decode(String.self)
             
-            // Try ISO8601 with fractional seconds first
             let formatter = ISO8601DateFormatter()
             formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
             if let date = formatter.date(from: dateString) {
                 return date
             }
             
-            // Fall back to without fractional seconds
             formatter.formatOptions = [.withInternetDateTime]
             if let date = formatter.date(from: dateString) {
                 return date

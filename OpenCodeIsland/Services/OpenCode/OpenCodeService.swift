@@ -43,6 +43,19 @@ class OpenCodeService: ObservableObject {
     @Published private(set) var isProcessing: Bool = false
     @Published private(set) var streamingText: String = ""
     @Published private(set) var conversationHistory: [MessageWithParts] = []
+    @Published private(set) var eventStreamStatus: EventStreamStatus = .disconnected
+    
+    enum EventStreamStatus: Equatable {
+        case disconnected
+        case connecting
+        case connected
+        case reconnecting(attempt: Int, maxAttempts: Int)
+        case failed(String)
+        
+        var isHealthy: Bool {
+            self == .connected
+        }
+    }
     
     // MARK: - Delegate
     
@@ -92,9 +105,8 @@ class OpenCodeService: ObservableObject {
         serverManager.isRunning ? serverManager.workingDirectory : nil
     }
     
-    /// Connect to the OpenCode server (always starts dedicated server instance)
+    /// Connect to the OpenCode server (expects server already started by StartupCoordinator)
     func connect() async {
-        // Guard against duplicate connect attempts
         guard connectionState != .connecting else {
             log("Already connecting; ignoring duplicate connect() call.")
             return
@@ -104,25 +116,15 @@ class OpenCodeService: ObservableObject {
         connectionState = .connecting
         
         do {
-            // NOTE: We intentionally do NOT try to reuse an existing server on port 4096.
-            // The OpenCode desktop app's web UI listens there and exposes health + sessions
-            // but does not return assistant message parts correctly, which causes Island
-            // to show empty assistant responses. We always start our own `opencode serve`.
-            log("Starting dedicated OpenCode server instance...")
-            
-            // Start our own server instance
-            await serverManager.startServer()
-            
             guard serverManager.isRunning else {
-                let error = serverManager.errorMessage ?? "Failed to start server"
-                log("Server failed to start: \(error)")
+                let error = serverManager.errorMessage ?? "Server not running"
+                log("Server not running: \(error)")
                 connectionState = .error(error)
                 return
             }
             
-            // Reinitialize client with the server's port
             reinitializeClient()
-            log("Server running on port \(serverManager.serverPort)")
+            log("Connecting to server on port \(serverManager.serverPort)")
             
             // Check server health
             log("Checking server health...")
@@ -245,10 +247,34 @@ class OpenCodeService: ObservableObject {
         return session.id
     }
     
-    /// Start a new session (clear current one)
     func newSession() async throws -> String {
+        if let oldSessionID = activeSessionID {
+            Task.detached(priority: .background) { [client] in
+                _ = try? await client.deleteSession(id: oldSessionID)
+            }
+        }
         activeSessionID = nil
         return try await getOrCreateSession()
+    }
+    
+    func cleanupOldSessions(keepLast: Int = 5) async {
+        do {
+            let sessions = try await client.listSessions()
+            let sortedSessions = sessions.sorted { $0.createdAt > $1.createdAt }
+            
+            guard sortedSessions.count > keepLast else { return }
+            
+            let sessionsToDelete = sortedSessions.dropFirst(keepLast)
+            for session in sessionsToDelete {
+                if session.id != activeSessionID {
+                    _ = try? await client.deleteSession(id: session.id)
+                }
+            }
+            
+            log("Cleaned up \(sessionsToDelete.count) old sessions")
+        } catch {
+            log("Failed to cleanup old sessions: \(error)")
+        }
     }
     
     /// Abort the current processing
@@ -339,27 +365,42 @@ class OpenCodeService: ObservableObject {
     
     // MARK: - Private Helpers
     
-    /// Start the SSE event stream for real-time updates
     private func startEventStream() {
         eventTask?.cancel()
+        eventStreamStatus = .connecting
         
         eventTask = Task {
             var retryCount = 0
-            let maxRetries = 5
+            let maxRetries = 10
+            let baseDelay: TimeInterval = 1.0
+            let maxDelay: TimeInterval = 60.0
             
-            while !Task.isCancelled && retryCount < maxRetries {
+            while !Task.isCancelled {
                 do {
                     log("Starting event stream (attempt \(retryCount + 1))")
+                    
+                    if retryCount > 0 {
+                        await MainActor.run {
+                            self.eventStreamStatus = .reconnecting(attempt: retryCount, maxAttempts: maxRetries)
+                        }
+                    }
+                    
                     let events = await client.subscribeToEvents()
-                    retryCount = 0  // Reset on successful connection
+                    
+                    await MainActor.run {
+                        self.eventStreamStatus = .connected
+                    }
+                    retryCount = 0
                     
                     for try await event in events {
                         await handleEvent(event)
                     }
                     
-                    // Stream ended normally, try to reconnect
                     if !Task.isCancelled {
                         log("Event stream ended, reconnecting...")
+                        await MainActor.run {
+                            self.eventStreamStatus = .reconnecting(attempt: 1, maxAttempts: maxRetries)
+                        }
                         try await Task.sleep(for: .seconds(1))
                     }
                 } catch {
@@ -368,22 +409,36 @@ class OpenCodeService: ObservableObject {
                     retryCount += 1
                     log("Event stream error (attempt \(retryCount)): \(error)")
                     
-                    if retryCount < maxRetries {
-                        // Exponential backoff: 1s, 2s, 4s, 8s, 16s
-                        let delay = pow(2.0, Double(retryCount - 1))
-                        log("Retrying in \(delay) seconds...")
-                        try? await Task.sleep(for: .seconds(delay))
+                    if retryCount >= maxRetries {
+                        await MainActor.run {
+                            self.eventStreamStatus = .failed("Connection lost after \(maxRetries) attempts")
+                        }
+                        
+                        try? await Task.sleep(for: .seconds(maxDelay))
+                        retryCount = 0
+                        continue
                     }
+                    
+                    let delay = min(baseDelay * pow(2.0, Double(retryCount - 1)), maxDelay)
+                    log("Retrying in \(delay) seconds...")
+                    
+                    await MainActor.run {
+                        self.eventStreamStatus = .reconnecting(attempt: retryCount, maxAttempts: maxRetries)
+                    }
+                    
+                    try? await Task.sleep(for: .seconds(delay))
                 }
             }
             
-            // Only show error if we exhausted retries and not cancelled
-            if !Task.isCancelled && retryCount >= maxRetries {
-                await MainActor.run {
-                    connectionState = .error("Event stream disconnected")
-                }
+            await MainActor.run {
+                self.eventStreamStatus = .disconnected
             }
         }
+    }
+    
+    func reconnectEventStream() {
+        log("Manual event stream reconnection requested")
+        startEventStream()
     }
     
     /// Handle an incoming SSE event
