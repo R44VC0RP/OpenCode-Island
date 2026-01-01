@@ -46,9 +46,13 @@ final class TaskManager {
         guard let managed = activeTasks.removeValue(forKey: id) else { return }
         managed.task.cancel()
         
-        let deadline = Date().addingTimeInterval(timeout)
-        while !managed.task.isCancelled && Date() < deadline {
-            try? await Task.sleep(for: .milliseconds(50))
+        _ = await withTaskGroup(of: Void.self) { group in
+            group.addTask { await managed.task.value }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(timeout))
+            }
+            await group.next()
+            group.cancelAll()
         }
     }
     
